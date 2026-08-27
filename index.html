@@ -793,8 +793,20 @@ body.drawer-open .drawer{transform:none}
   background:var(--accent);color:var(--onAccent);font-size:calc(.82em * var(--numScale,1));font-weight:700}
 .nums-giant{--numW:2.1em}
 .nums-giant .num{font-family:var(--fDisp);font-size:calc(2.3em * var(--numScale,1));line-height:.82;color:var(--accent);font-weight:700}
+/* Hiding the numbers takes .num out of the grid, so every later child of .ent
+   shifts one track left. That is right for the shared two-track entry, but four
+   layouts declare their own tracks and break: depletion and ratchet put a
+   marker in a column *before* the number, and grouped and mosaic size a track
+   for the number itself. Left alone, the text either lands in the marker's
+   column or drops onto a row of its own beneath it.
+   Each of these needs its template restated with the number's track removed.
+   A new layout that declares its own .ent grid needs a line here too. */
 .nums-hidden .num{display:none}
 .nums-hidden .ent{grid-template-columns:1fr}
+.nums-hidden.lay-depletion .ent{grid-template-columns:1.35em 1fr}
+.nums-hidden.lay-ratchet .ent{grid-template-columns:1.1em 1fr}
+.nums-hidden.lay-grouped .ent.d1{grid-template-columns:1fr}
+.nums-hidden.lay-mosaic .ent.feat{grid-template-columns:1fr}
 .lay-bars .num,.lay-prose .num{display:inline!important;width:auto!important;height:auto!important;border-radius:0}
 
 /* ---- label styles ---- */
@@ -1021,7 +1033,7 @@ body.drawer-open .drawer{transform:none}
     <div class="spacer"></div>
     <button id="editBtn" class="mini" aria-pressed="false">Edit on canvas</button>
     <button id="saveDoc" class="mini">Save</button>
-    <button id="goExport" class="go">Export&#8230;</button>
+    <button id="copyTop" class="go">Copy image</button>
   </div>
 
   <div class="dwscrim" id="dwScrim"></div>
@@ -2481,14 +2493,22 @@ $('saveBtn').onclick = async () => {
   const spill=$('lightbox').getAttribute('data-spill');
   toast(spill ? `Saved ${a.download} — ${spill} was cut` : 'Saved '+a.download, !!spill);
 };
-$('copyBtn').onclick = async () => {
-  const c = await shoot(); if(!c) return;
+/* Two buttons fire this now — the one in the Export pane and the one on the top
+   bar — so it carries its own busy state. A capture at 4x is slow enough that a
+   button with no feedback gets clicked twice. */
+async function copyImage(btn){
+  if(btn && btn.disabled) return;
+  const was = btn ? btn.textContent : '';
+  if(btn){ btn.disabled=true; btn.textContent='Copying…'; }
   try{
+    const c = await shoot(); if(!c) return;
     const blob = await new Promise(r=>c.toBlob(r,'image/png'));
     await navigator.clipboard.write([new ClipboardItem({'image/png':blob})]);
     toast('Image copied — paste into Substack');
   }catch(e){ toast('Clipboard blocked — use Save image',true); }
-};
+  finally{ if(btn){ btn.disabled=false; btn.textContent=was; } }
+}
+$('copyBtn').onclick = e => copyImage(e.currentTarget);
 
 /* ---------------------------------------------------------------- wiring */
 ['layout','rows','nums','hdr','lbl','counter','punct','autodie','altbars','numalign'].forEach(id=>$(id).addEventListener('change',render));
@@ -2721,6 +2741,32 @@ function clearBackdrop(){
   $('thumb').style.backgroundImage='none'; $('thumb').textContent='Drop an image on the preview';
 }
 
+/* ---- starting clean -------------------------------------------------------
+   Everything in the rail is a property of the document, not of the app. A
+   backdrop, a plate, a poster title belong to the table you set them on and
+   must not follow you into the next one. Read the factory values straight off
+   the markup before anything has been applied, so this can never drift from
+   what the HTML declares.
+   Export format and resolution are the exception: those describe how you
+   deliver a table, not what it looks like, so they stay put. */
+const DEFAULTS=grabSettings();
+const KEEP_ON_NEW=new Set(['fmt','scale']);
+function resetSettings(){
+  ctrls().forEach(el=>{
+    if(KEEP_ON_NEW.has(el.id) || !(el.id in DEFAULTS)) return;
+    if(el.type==='checkbox') el.checked=DEFAULTS[el.id];
+    else el.value=DEFAULTS[el.id];
+  });
+  clearBackdrop();
+  syncVals(); syncDisclosure();
+  applyLook(); fitNumberColumns(); fitPreview();
+}
+/* every route to a new table goes through here */
+function startFresh(){
+  resetSettings();
+  currentId=null; $('docName').value=''; $('docColl').value='';
+}
+
 /* ---- library ---- */
 const IDX='tf:index', DOC=id=>'tf:doc:'+id, AUTO='tf:autosave';
 let currentId=null;
@@ -2782,9 +2828,9 @@ async function delDoc(id){
 $('saveDoc').onclick=saveDoc;
 $('newDoc').onclick=()=>{
   if($('src').value.trim() && !confirm('Start a new table? Unsaved changes to the current one will be lost.')) return;
-  currentId=null; $('docName').value=''; $('docColl').value='';
+  startFresh();
   $('src').value='# New Table\n> How to use it.\n- First entry\n- Second entry\n- Third entry';
-  clearBackdrop(); render(); stats(); renderLibrary();
+  edPaint(); render(); stats(); renderLibrary();
 };
 $('dupDoc').onclick=async()=>{
   const base=($('docName').value||'Untitled table').replace(/ copy( \d+)?$/,'');
@@ -3520,7 +3566,7 @@ $('modebar').addEventListener('click',e=>{
   const b=e.target.closest('button[data-m]'); if(b) setMode(b.dataset.m,true);
 });
 $('panelGrab').onclick=()=>openSheet(!document.body.classList.contains('sheet-open'));
-$('goExport').onclick=()=>setMode('export');
+$('copyTop').onclick=e=>copyImage(e.currentTarget);
 addEventListener('resize',()=>{ if(!isPhone()) document.body.classList.remove('sheet-open'); });
 
 /* --- every slider gets a live value; 14 of them had none --- */
@@ -3884,14 +3930,14 @@ $('gal').addEventListener('click',ev=>{
   const ex=ev.target.closest('button[data-ex]');
   if(ex){
     ev.stopPropagation();
+    startFresh();
     applyPreset(ex.dataset.ex,true);
-    currentId=null; $('docName').value='';
     showScreen('editor'); return;
   }
   const c=ev.target.closest('.card'); if(!c) return;
   const keep = galIntent==='restyle' && hasOwnWork();
+  if(!keep) startFresh();          // restyling deliberately keeps your artwork
   applyPreset(c.dataset.k, !keep);
-  if(!keep){ currentId=null; $('docName').value=''; }
   showScreen('editor');
   if(keep) toast('Format applied — your entries kept');
 });
@@ -3927,8 +3973,9 @@ $('actOpen').onclick=()=>showScreen('library');
 $('actImport').onclick=()=>$('libFile').click();
 $('backProj').onclick=()=>showScreen('project');
 $('skipFmt').onclick=()=>{
+  startFresh();
   $('src').value='# New Table\n> How to use it.\n- First entry\n- Second entry\n- Third entry';
-  currentId=null; $('docName').value=''; clearBackdrop();
+  edPaint(); render(); stats();
   showScreen('editor');
 };
 $('fmtBtn').onclick=()=>{ galIntent='restyle'; showScreen('gallery'); };
